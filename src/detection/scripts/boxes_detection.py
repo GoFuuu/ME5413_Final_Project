@@ -16,6 +16,8 @@ from collections import defaultdict
 from std_msgs.msg import Int8, Bool
 import message_filters
 from visualization_msgs.msg import Marker
+import message_filters
+from visualization_msgs.msg import Marker
 class BoxCountNode:
     def __init__(self):
         rospy.init_node("ocr_lidar_box_center_node")
@@ -39,11 +41,20 @@ class BoxCountNode:
         self.marker_pub = rospy.Publisher("/confirmed_markers", Marker, queue_size=10)
         
         self.marker_id_counter = 0
+        self.confirmed_point_pub = rospy.Publisher("/confirmed_point", PointStamped, queue_size=10)
+        self.marker_pub = rospy.Publisher("/confirmed_markers", Marker, queue_size=10)
+        
+        self.marker_id_counter = 0
         self.finalized_boxes = defaultdict(list)
         self.pending_boxes = defaultdict(list)
         self.box_counts = defaultdict(int)
         self.match_points_num = 45
+        self.match_points_num = 45
         self.dist_existing = 1.2
+        self.dist_pending = 0.15
+        self.required_frames = 10
+        self.max_points_distance = 10
+        self.limit_points_distance = False
         self.dist_pending = 0.15
         self.required_frames = 10
         self.max_points_distance = 10
@@ -53,6 +64,8 @@ class BoxCountNode:
         self.min_digit = None
 
         rospy.Subscriber("/front/camera_info", CameraInfo, self.camera_info_callback)
+        #rospy.Subscriber("/mid/points", PointCloud2, self.lidar_callback)
+        #rospy.Subscriber("/front/image_raw", Image, self.image_callback)
         #rospy.Subscriber("/mid/points", PointCloud2, self.lidar_callback)
         #rospy.Subscriber("/front/image_raw", Image, self.image_callback)
         rospy.Subscriber("/do_find_goal", Bool, self.find_goal_callback)
@@ -68,13 +81,28 @@ class BoxCountNode:
         )
         sync.registerCallback(self.synced_callback)
         self.start_time = time.time()
+        
+        image_sub = message_filters.Subscriber("/front/image_raw", Image)
+        lidar_sub = message_filters.Subscriber("/mid/points", PointCloud2)
+        # 创建近似时间同步器
+        sync = message_filters.ApproximateTimeSynchronizer(
+            [image_sub, lidar_sub],
+            queue_size=40,  # 队列大小
+            slop=0.2       # 允许的时间差（单位：秒）
+        )
+        sync.registerCallback(self.synced_callback)
+        self.start_time = time.time()
     def find_goal_callback(self, msg):
         self.find_goal_mode = msg.data
+        #if msg.data:
+            #rospy.loginfo("[FIND_GOAL] 模式开启")
         #if msg.data:
             #rospy.loginfo("[FIND_GOAL] 模式开启")
 
     def boxes_count_callback(self, msg):
         self.boxes_count_mode = msg.data
+        #if msg.data:
+            #rospy.loginfo("[BOXES_COUNT] 模式开启")
         #if msg.data:
             #rospy.loginfo("[BOXES_COUNT] 模式开启")
 
@@ -117,6 +145,7 @@ class BoxCountNode:
 
     def handle_detection(self, digit, box_center):
         #rospy.loginfo(f"Current box counts: {self.box_counts.items()}")
+        #rospy.loginfo(f"Current box counts: {self.box_counts.items()}")
         for fc in self.finalized_boxes[digit]:
             if self.distance_3d(fc, box_center) < self.dist_existing:
                 return
@@ -131,6 +160,31 @@ class BoxCountNode:
                         self.box_counts[digit] += 1
                         self.pending_boxes[digit].remove(pbox)
                         rospy.loginfo(f"[CONFIRMED] {digit} at {avg_center}, total: {self.box_counts[digit]}")
+                        
+                        # 发布数字标签到 RViz
+                        marker = Marker()
+                        marker.header.frame_id = "map"  # 使用 map 坐标系
+                        marker.header.stamp = rospy.Time.now()
+                        marker.ns = "confirmed_boxes"
+                        marker.id = self.marker_id_counter
+                        self.marker_id_counter += 1
+                        marker.type = Marker.TEXT_VIEW_FACING
+                        marker.action = Marker.ADD
+                        marker.pose.position.x = avg_center[0]
+                        marker.pose.position.y = avg_center[1]
+                        marker.pose.position.z = avg_center[2]   # 将文本放在点的上方
+                        marker.pose.orientation.x = 0.0
+                        marker.pose.orientation.y = 0.0
+                        marker.pose.orientation.z = 0.0
+                        marker.pose.orientation.w = 1.0
+                        marker.scale.z = 2 # 文本大小
+                        marker.color.a = 1.0  # 透明度
+                        marker.color.r = 1.0  # 红色
+                        marker.color.g = 0 # 绿色
+                        marker.color.b = 0 # 蓝色
+                        marker.text = str(digit)  # 显示的数字
+                        marker.lifetime = rospy.Duration(0)  # 设置为永久存在
+                        self.marker_pub.publish(marker)
                         
                         # 发布数字标签到 RViz
                         marker = Marker()
