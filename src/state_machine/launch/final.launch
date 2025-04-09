@@ -20,5 +20,6 @@
 
     <!-- Add state_machine.py -->
     <node pkg="state_machine" type="state_machine.py" name="state_machine" output="screen" />
+    <node pkg="bridge_detector" type="bridge_detector.py" name="bridge_detector" output="screen" />
     <node pkg="detection" type="boxes_detection.py" name="ocr_lidar_box_center_node" output="screen" />
 </launch>
