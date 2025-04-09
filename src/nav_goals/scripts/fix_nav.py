@@ -11,8 +11,8 @@ class FixedPathNavigator:
 
         self.goal_pub = rospy.Publisher('/move_base_simple/goal', PoseStamped, queue_size=10)
         self.trigger_pub = rospy.Publisher('/bridge_detection_trigger', Bool, queue_size=1)
-        self.boxes_count_pub = rospy.Publisher('/do_boxes_count', Bool, queue_size=1)
-        self.cross_bridge_pub = rospy.Publisher('/do_cross_bridge', Bool, queue_size=1)
+        self.boxes_count_pub = rospy.Publisher('/start_boxes_count', Bool, queue_size=1)
+        self.cross_bridge_pub = rospy.Publisher('/start_cross_bridge', Bool, queue_size=1)
 
         rospy.Subscriber('/move_base/result', MoveBaseActionResult, self.result_callback)
 
