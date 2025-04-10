@@ -34,7 +34,7 @@ class BridgeDetector:
         self.pose2d_pub = rospy.Publisher('/custom_goal_pose2d', Pose2D, queue_size=5)
         self.marker_pub = rospy.Publisher('/bridge_marker', Marker, queue_size=1)
         self.unlock_pub = rospy.Publisher('/cmd_open_bridge', Bool, queue_size=1)
-
+        self.do_find_goal = rospy.Publisher('/start_find_goal', Bool, queue_size=1)
         rospy.loginfo("🛠 正在准备检测桥...")
 
     def map_cb(self, msg):
@@ -117,6 +117,26 @@ class BridgeDetector:
         mean_x = np.mean(bridge_array[:, 0])
         mean_y = np.mean(bridge_array[:, 1])
         rospy.loginfo("✅ 桥中心: x = %.2f, y = %.2f", mean_x, mean_y)
+        rospy.loginfo("📤 已发布桥中心 marker")
+        marker = Marker()
+        marker.header.frame_id = self.map_msg.header.frame_id
+        marker.header.stamp = rospy.Time.now()
+        marker.ns = "bridge_marker"
+        marker.id = 0
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position.x = mean_x
+        marker.pose.position.y = mean_y
+        marker.pose.position.z = 0.2
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.4
+        marker.scale.y = 0.4
+        marker.scale.z = 0.4
+        marker.color.a = 1.0
+        marker.color.r = 0.0
+        marker.color.g = 1.0
+        marker.color.b = 0.0
+        self.marker_pub.publish(marker)
 
         for idx, x in enumerate([9.5, 4.0]):
             self.reached_goal = False
@@ -141,27 +161,10 @@ class BridgeDetector:
                 rospy.loginfo("🔓 解锁桥梁")
                 self.unlock_pub.publish(Bool(data=True))
                 self.move()
-
-        marker = Marker()
-        marker.header.frame_id = self.map_msg.header.frame_id
-        marker.header.stamp = rospy.Time.now()
-        marker.ns = "bridge_marker"
-        marker.id = 0
-        marker.type = Marker.SPHERE
-        marker.action = Marker.ADD
-        marker.pose.position.x = mean_x
-        marker.pose.position.y = mean_y
-        marker.pose.position.z = 0.2
-        marker.pose.orientation.w = 1.0
-        marker.scale.x = 0.4
-        marker.scale.y = 0.4
-        marker.scale.z = 0.4
-        marker.color.a = 1.0
-        marker.color.r = 0.0
-        marker.color.g = 1.0
-        marker.color.b = 0.0
-        self.marker_pub.publish(marker)
-        rospy.loginfo("📤 已发布桥中心 marker")
+                
+        self.do_find_goal.publish(Bool(data=True))
+        
+        
 
         FixedPathNavigator()
 
@@ -182,14 +185,16 @@ class BridgeTriggerListener:
 class FixedPathNavigator:
     def __init__(self):
         self.goal_pub = rospy.Publisher('/move_base_simple/goal', PoseStamped, queue_size=10)
-        self.do_find_goal = rospy.Publisher('/do_find_goal', Bool, queue_size=1)
+        
         rospy.Subscriber('/move_base/result', MoveBaseActionResult, self.result_callback)
 
         self.path = [
-            (3.5, -6, -3.14),
-            (3.5, -16, -3.14)
+            (3, -7, -3.14),
+            (3, -10, -3.14),
+            (3, -13, -3.14),
+            (3, -16, -3.14)
         ]
-
+        
         self.current_index = 0
         rospy.sleep(2.0)  # 等待时钟、发布器初始化
         self.send_next_goal()
@@ -197,7 +202,7 @@ class FixedPathNavigator:
     def send_next_goal(self):
         if self.current_index >= len(self.path):
             rospy.loginfo("✅ 所有目标点均已完成导航。")
-            self.do_find_goal.publish(Bool(data=True))
+            
             rospy.signal_shutdown("导航完成，自动退出。")
             return
 

@@ -36,38 +36,35 @@ class BoxCountNode:
         self.image_pub = rospy.Publisher("/detection/image_annotated", Image, queue_size=1)
         self.compressed_image_pub = rospy.Publisher("/detection/image_annotated/compressed", CompressedImage, queue_size=1)
         self.min_box_pub = rospy.Publisher("/detection/min_box_count", Int8, queue_size=1)
-        self.goal_pub = rospy.Publisher("/goal_from_digit", PoseStamped, queue_size=1)
-        self.confirmed_point_pub = rospy.Publisher("/confirmed_point", PointStamped, queue_size=10)
-        self.marker_pub = rospy.Publisher("/confirmed_markers", Marker, queue_size=10)
-        
+        self.goal_pub = rospy.Publisher("/move_base_simple/goal", PoseStamped, queue_size=10)
+
         self.marker_id_counter = 0
         self.confirmed_point_pub = rospy.Publisher("/confirmed_point", PointStamped, queue_size=10)
         self.marker_pub = rospy.Publisher("/confirmed_markers", Marker, queue_size=10)
         
-        self.marker_id_counter = 0
+       
         self.finalized_boxes = defaultdict(list)
         self.pending_boxes = defaultdict(list)
         self.box_counts = defaultdict(int)
+        
         self.match_points_num = 45
-        self.match_points_num = 45
-        self.dist_existing = 1.2
+        self.dist_existing = 1.3
         self.dist_pending = 0.15
         self.required_frames = 10
         self.max_points_distance = 10
-        self.limit_points_distance = False
-        self.dist_pending = 0.15
-        self.required_frames = 10
-        self.max_points_distance = 10
+        
         self.limit_points_distance = False
         self.find_goal_mode = False
         self.boxes_count_mode = False
         self.min_digit = None
 
+        self.goal_frame_count = 0
+        self.last_goal_position = None
+        self.goal_published = False
+        
         rospy.Subscriber("/front/camera_info", CameraInfo, self.camera_info_callback)
-        #rospy.Subscriber("/mid/points", PointCloud2, self.lidar_callback)
-        #rospy.Subscriber("/front/image_raw", Image, self.image_callback)
-        #rospy.Subscriber("/mid/points", PointCloud2, self.lidar_callback)
-        #rospy.Subscriber("/front/image_raw", Image, self.image_callback)
+        # rospy.Subscriber("/mid/points", PointCloud2, self.lidar_callback)
+        # rospy.Subscriber("/front/image_raw", Image, self.image_callback)
         rospy.Subscriber("/do_find_goal", Bool, self.find_goal_callback)
         rospy.Subscriber("/do_boxes_count", Bool, self.boxes_count_callback)
         
@@ -81,17 +78,7 @@ class BoxCountNode:
         )
         sync.registerCallback(self.synced_callback)
         self.start_time = time.time()
-        
-        image_sub = message_filters.Subscriber("/front/image_raw", Image)
-        lidar_sub = message_filters.Subscriber("/mid/points", PointCloud2)
-        # 创建近似时间同步器
-        sync = message_filters.ApproximateTimeSynchronizer(
-            [image_sub, lidar_sub],
-            queue_size=40,  # 队列大小
-            slop=0.2       # 允许的时间差（单位：秒）
-        )
-        sync.registerCallback(self.synced_callback)
-        self.start_time = time.time()
+
     def find_goal_callback(self, msg):
         self.find_goal_mode = msg.data
         #if msg.data:
@@ -186,32 +173,65 @@ class BoxCountNode:
                         marker.lifetime = rospy.Duration(0)  # 设置为永久存在
                         self.marker_pub.publish(marker)
                         
-                        # 发布数字标签到 RViz
-                        marker = Marker()
-                        marker.header.frame_id = "map"  # 使用 map 坐标系
-                        marker.header.stamp = rospy.Time.now()
-                        marker.ns = "confirmed_boxes"
-                        marker.id = self.marker_id_counter
-                        self.marker_id_counter += 1
-                        marker.type = Marker.TEXT_VIEW_FACING
-                        marker.action = Marker.ADD
-                        marker.pose.position.x = avg_center[0]
-                        marker.pose.position.y = avg_center[1]
-                        marker.pose.position.z = avg_center[2]   # 将文本放在点的上方
-                        marker.pose.orientation.x = 0.0
-                        marker.pose.orientation.y = 0.0
-                        marker.pose.orientation.z = 0.0
-                        marker.pose.orientation.w = 1.0
-                        marker.scale.z = 2 # 文本大小
-                        marker.color.a = 1.0  # 透明度
-                        marker.color.r = 1.0  # 红色
-                        marker.color.g = 0 # 绿色
-                        marker.color.b = 0 # 蓝色
-                        marker.text = str(digit)  # 显示的数字
-                        marker.lifetime = rospy.Duration(0)  # 设置为永久存在
-                        self.marker_pub.publish(marker)
                 return
         self.pending_boxes[digit].append({"centers": [box_center]})
+    def handle_final_goal(self, center_world, text):
+        # 检查当前帧的位置是否与上一帧大致相同
+        current_position = (center_world.point.x, center_world.point.y, center_world.point.z)
+        if self.last_goal_position and self.is_position_similar(self.last_goal_position, current_position):
+            self.goal_frame_count += 1
+        else:
+            self.goal_frame_count = 1  # 重置计数器
+            self.last_goal_position = current_position
+
+        rospy.loginfo(f"[GOAL] 连续帧计数: {self.goal_frame_count}")
+
+        # 如果连续帧数达到 5，则发布目标
+        if self.goal_frame_count >= 10:
+            self.goal_published = True
+            
+            goal = PoseStamped()
+            goal.header = center_world.header
+            goal.pose.position = center_world.point
+            goal.pose.position.x += 0.8
+            goal.pose.orientation.w = 1.5
+            self.goal_pub.publish(goal)
+            rospy.loginfo(f"[GOAL] 连续识别到目标数字 {text}，已发送目标点: {goal.pose.position}")
+            self.goal_published = True  # 标记目标已发布
+            self.goal_frame_count = 0  # 重置计数器
+             # 添加 RViz 可视化点
+            marker = Marker()
+            marker.header.frame_id = "map"  # 使用 map 坐标系
+            marker.header.stamp = rospy.Time.now()
+            marker.ns = "goal_markers"
+            marker.id = self.marker_id_counter
+            self.marker_id_counter += 1
+            marker.type = Marker.SPHERE
+            marker.action = Marker.ADD
+            marker.pose.position.x = center_world.point.x
+            marker.pose.position.y = center_world.point.y
+            marker.pose.position.z = center_world.point.z
+            marker.pose.orientation.x = 0.0
+            marker.pose.orientation.y = 0.0
+            marker.pose.orientation.z = 0.0
+            marker.pose.orientation.w = 1.0
+            marker.scale.x = 0.5  # 设置点的大小
+            marker.scale.y = 0.5
+            marker.scale.z = 0.5
+            marker.color.a = 1.0  # 设置透明度
+            marker.color.r = 0.0  # 蓝色
+            marker.color.g = 1.0  # 绿色
+            marker.color.b = 0.0
+            marker.lifetime = rospy.Duration(0)  # 设置为永久存在
+            self.marker_pub.publish(marker)
+            
+            
+    def is_position_similar(self, pos1, pos2, tolerance=0.2):
+        return (
+            abs(pos1[0] - pos2[0]) < tolerance and
+            abs(pos1[1] - pos2[1]) < tolerance and
+            abs(pos1[2] - pos2[2]) < tolerance
+        )
     def synced_callback(self, img_msg, pc2_msg):
         start_time = time.time()
         #diff = abs((img_msg.header.stamp - pc2_msg.header.stamp).to_sec())
@@ -226,7 +246,7 @@ class BoxCountNode:
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         
         if not (self.find_goal_mode or self.boxes_count_mode):
-            rospy.loginfo("[INFO] No active mode. Waiting for commands.")
+            #rospy.loginfo("[INFO] No active mode. Waiting for commands.")
             annotated_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
             annotated_msg = ros_numpy.msgify(Image, annotated_bgr, encoding="bgr8")
             annotated_msg.header = img_msg.header
@@ -298,21 +318,18 @@ class BoxCountNode:
                             if self.min_digit is None and self.box_counts:
                                 self.min_digit = min(self.box_counts, key=self.box_counts.get)
                             if text == str(self.min_digit):
-                                goal = PoseStamped()
-                                goal.header = center_world.header
-                                goal.pose.position = center_world.point
-                                goal.pose.orientation.w = 1.0
-                                self.goal_pub.publish(goal)
-                                rospy.loginfo(f"[GOAL] 识别到目标数字 {text}，已发送目标点: {goal.pose.position}")
+                                if not self.goal_published:
+                                    self.handle_final_goal(center_world, text)
+                                    
                         else:
                             self.handle_detection(
                             digit=text,
                             box_center=world_box_center,)
-                            if self.box_counts:
-                                # min_digit = min(self.box_counts, key=self.box_counts.get)
-                                # self.min_box_pub.publish(int(min_digit))
-                                # rospy.loginfo(f"[COUNT] min_digit = {min_digit}")
-                                rospy.loginfo(f"Current box counts: {self.box_counts.items()}")
+                            # if self.box_counts:
+                            #     # min_digit = min(self.box_counts, key=self.box_counts.get)
+                            #     # self.min_box_pub.publish(int(min_digit))
+                            #     # rospy.loginfo(f"[COUNT] min_digit = {min_digit}")
+                            #     rospy.loginfo(f"Current box counts: {self.box_counts.items()}")
                         # center_camera = tf2_geometry_msgs.do_transform_point(center_pt, self.transform)
                         # x, y, z = center_camera.point.x, center_camera.point.y, center_camera.point.z
                         
@@ -348,113 +365,7 @@ class BoxCountNode:
 
             
             #rospy.loginfo(f"Processing time: {time.time() - start_time:.2f} seconds")
-        
-    def image_callback(self, img_msg):
-        start_time = time.time()
 
-        if not (self.find_goal_mode or self.boxes_count_mode):
-            rospy.loginfo("[INFO] No active mode. Waiting for commands.")
-            return
-
-        if self.lidar_points is None or self.camera_intrinsics is None:
-            rospy.logwarn("[WARNING] Lidar points or camera intrinsics not available.")
-            return
-
-        self.update_transform(img_msg.header.stamp)
-        if self.transform is None:
-            rospy.logwarn("[WARNING] Transform not available.")
-            return
-
-        img = ros_numpy.numpify(img_msg)
-        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-        # Transform lidar points to camera frame
-        points = self.lidar_points.copy()
-        lidar_cam_all = self.transform_points(points, self.transform)
-        lidar_cam = lidar_cam_all[lidar_cam_all[:, 2] > 0]
-        lidar_filtered = points[lidar_cam_all[:, 2] > 0]
-        uv = (self.camera_intrinsics @ lidar_cam.T).T
-        uv[:, :2] /= lidar_cam[:, 2:3]
-        uv = uv[:, :2].astype(int)
-
-        #OCR detection
-        results = self.ocr_reader.readtext(img_rgb, allowlist='0123456789')
-
-        for bbox, text, conf in results:
-            if conf > 0.5 and text.strip() in "123456789":
-                bbox = np.array(bbox, dtype=int)
-                u_center, v_center = int(np.mean(bbox[:, 0])), int(np.mean(bbox[:, 1]))
-                u_min, v_min = np.min(bbox[:, 0]), np.min(bbox[:, 1])
-                u_max, v_max = np.max(bbox[:, 0]), np.max(bbox[:, 1])
-                in_bbox_mask = (
-                    (uv[:, 0] >= u_min) & (uv[:, 0] <= u_max) &
-                    (uv[:, 1] >= v_min) & (uv[:, 1] <= v_max))
-                matched_points = lidar_filtered[in_bbox_mask]
-
-                if len(matched_points) > self.match_points_num:
-                    box_center_point = matched_points.mean(axis=0)
-                    normal_vector = self.adjust_normal_direction(self.estimate_normal(matched_points), box_center_point)
-                    box_center = box_center_point + normal_vector * 0.4
-                    center_pt = PointStamped()
-                    center_pt.header.frame_id = "velodyne"
-                    center_pt.point.x, center_pt.point.y, center_pt.point.z = box_center
-
-                    try:
-                        transform_world = self.tf_buffer.lookup_transform("map", "velodyne", rospy.Time(0), rospy.Duration(1.0))
-                        center_world = tf2_geometry_msgs.do_transform_point(center_pt, transform_world)
-                        world_box_center = (center_world.point.x, center_world.point.y, center_world.point.z)
-
-                        if self.find_goal_mode:
-                            if self.min_digit is None and self.box_counts:
-                                self.min_digit = min(self.box_counts, key=self.box_counts.get)
-                            if text == str(self.min_digit):
-                                goal = PoseStamped()
-                                goal.header = center_world.header
-                                goal.pose.position = center_world.point
-                                goal.pose.orientation.w = 1.0
-                                self.goal_pub.publish(goal)
-                                rospy.loginfo(f"[GOAL] 识别到目标数字 {text}，已发送目标点: {goal.pose.position}")
-                        else:
-                            self.handle_detection(
-                            digit=text,
-                            box_center=world_box_center,)
-                            
-                        center_camera = tf2_geometry_msgs.do_transform_point(center_pt, self.transform)
-                        x, y, z = center_camera.point.x, center_camera.point.y, center_camera.point.z
-                        if z > 0:
-                            # draw points
-                            for u_p, v_p in uv[in_bbox_mask]:
-                                cv2.circle(img_rgb, (u_p, v_p), 3, (255, 0, 0), -1)
-                            
-                            uv_center = self.camera_intrinsics @ np.array([x, y, z]) / z
-                            u, v = int(uv_center[0]), int(uv_center[1])
-                            #draw real center
-                            cv2.circle(img_rgb, (u, v), 5, (0, 255, 255), -1)
-                            cv2.putText(img_rgb, f"{text} ({center_world.point.x:.2f},{center_world.point.y:.2f})",
-                                        (u, v - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
-                            #draw bounding box
-                            cv2.rectangle(img_rgb, tuple(bbox[0]), tuple(bbox[2]), (0, 255, 0), 2)
-                            cv2.circle(img_rgb, (u_center, v_center), 5, (255, 255, 255), -1)
-                    except Exception as e:
-                        rospy.logwarn(f"Transform or handle failed: {e}")
-
-        annotated_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-        annotated_msg = ros_numpy.msgify(Image, annotated_bgr, encoding="bgr8")
-        annotated_msg.header = img_msg.header
-        self.image_pub.publish(annotated_msg)
-
-        compressed_msg = CompressedImage()
-        compressed_msg.header = img_msg.header
-        compressed_msg.format = "jpeg"
-        compressed_msg.data = np.array(cv2.imencode('.jpg', annotated_bgr)[1]).tobytes()
-        self.compressed_image_pub.publish(compressed_msg)
-
-        if self.box_counts:
-            min_digit = min(self.box_counts, key=self.box_counts.get)
-            self.min_box_pub.publish(int(min_digit))
-            rospy.loginfo(f"[COUNT] min_digit = {min_digit}")
-
-        rospy.loginfo(f"Processing time: {time.time() - start_time:.2f} seconds")
 
 if __name__ == "__main__":
     node = BoxCountNode()
